@@ -15,8 +15,13 @@ from typing import List, Optional
 
 from .providers.base import Message, ToolCall
 
-# Where to store sessions
-SESSIONS_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "aicode" / "sessions"
+# Where to store sessions — computed lazily so tests can override XDG_DATA_HOME
+def _sessions_dir() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "aicode" / "sessions"
+
+
+def _session_path(session_id: str) -> Path:
+    return _sessions_dir() / f"{session_id}.json"
 
 
 @dataclass
@@ -66,7 +71,7 @@ def save_session(
     if session_id is None:
         session_id = uuid.uuid4().hex[:12]
 
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _sessions_dir().mkdir(parents=True, exist_ok=True)
     now = time.time()
     record = SessionRecord(
         id=session_id,
@@ -77,14 +82,14 @@ def save_session(
         messages=[_serialize_message(m) for m in messages],
         cost_summary=cost_summary,
     )
-    path = SESSIONS_DIR / f"{session_id}.json"
+    path = _session_path(session_id)
     path.write_text(record.to_json(), encoding="utf-8")
     return session_id
 
 
 def load_session(session_id: str) -> Optional[tuple]:
     """Load a session from disk. Returns (messages, pinned_profile, cwd, cost_summary) or None."""
-    path = SESSIONS_DIR / f"{session_id}.json"
+    path = _session_path(session_id)
     if not path.is_file():
         return None
     try:
@@ -102,10 +107,10 @@ def load_session(session_id: str) -> Optional[tuple]:
 
 def list_sessions(limit: int = 20) -> List[dict]:
     """List recent sessions (newest first)."""
-    if not SESSIONS_DIR.exists():
+    if not _sessions_dir().exists():
         return []
     sessions: List[dict] = []
-    for p in SESSIONS_DIR.glob("*.json"):
+    for p in _sessions_dir().glob("*.json"):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             # Find first user message for preview

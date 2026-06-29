@@ -61,8 +61,8 @@ class ShellTool(Tool):
         # Unknown command — ask
         return True
 
-    def run(self, command: str, timeout: int = 120, **_: Any) -> ToolResult:
-        needs = self._needs_approval(command)
+    def run(self, command: str, timeout: int = 120, force: bool = False, **_: Any) -> ToolResult:
+        needs = self._needs_approval(command) and not force
         if needs and self.require_approval:
             return ToolResult(
                 success=True,

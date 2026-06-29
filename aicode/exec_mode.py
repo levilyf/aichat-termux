@@ -91,8 +91,7 @@ async def run_exec(
     )
 
     try:
-        async for _ in agent.chat(full_prompt):
-            pass
+        await agent.chat(full_prompt)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         return 1

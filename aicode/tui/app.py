@@ -138,6 +138,7 @@ class AICodeApp(App):
             cwd=self.cwd,
             profile=self.initial_profile,
             on_event=self._on_agent_event,
+            on_permission_request=self._handle_permission_request,
             plan_mode=self.initial_plan_mode,
             session_id=self.session_id,
             mcp_manager=self.mcp_manager,
@@ -550,8 +551,7 @@ class AICodeApp(App):
         if self.agent is None:
             return
         try:
-            async for _ in self.agent.chat(user_text):
-                pass
+            await self.agent.chat(user_text)
         except Exception as e:
             self._add_chat_message("error", f"Agent error: {e}")
 
@@ -560,29 +560,14 @@ class AICodeApp(App):
         if self.agent is None:
             return
         try:
-            async for _ in self.agent.chat(user_text):
-                pass
+            await self.agent.chat(user_text)
         except Exception as e:
             self._add_chat_message("error", f"Agent error: {e}")
 
-    async def request_approval(self, command: str) -> bool:
-        """Pop a modal asking the user to approve a command."""
-        # Parse the command back into a tool name + args for display
-        # The agent passes "tool_name({args})" format
-        return await self._show_permission_modal("shell", {"command": command}, "The agent wants to run a shell command.")
-
-    async def request_permission(self, tool_name: str, args: dict) -> bool:
-        """Pop a modal for any tool that needs permission."""
-        perm = self.agent.permissions.get_permission(tool_name, args)
-        if perm == "allow":
-            return True
-        if perm == "deny":
-            return False
-        return await self._show_permission_modal(tool_name, args, f"The agent wants to use `{tool_name}`.")
-
-    async def _show_permission_modal(self, tool_name: str, args: dict, reason: str) -> bool:
-        """Show the permission modal and await the user's response."""
+    async def _handle_permission_request(self, tool_name: str, args: dict) -> bool:
+        """Permission callback for the Agent — pushes a modal and awaits the user."""
         from .modals import PermissionModal
+        reason = f"The agent wants to use `{tool_name}`."
         result = await self.push_screen_wait(PermissionModal(tool_name, args, reason))
         return bool(result)
 
