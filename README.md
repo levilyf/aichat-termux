@@ -23,7 +23,7 @@ An autonomous coding agent that runs in your terminal — built for Termux (Andr
 
 ### Provider support
 - **7 providers out of the box** — NVIDIA NIM, OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, Ollama (local)
-- **Interactive setup wizard** — pick providers, paste keys, live validation, write config
+- **Interactive setup wizard** — pick providers, paste keys, live validation, **fetch live model lists from each provider's API**, browse and pick models, write config
 
 ### Agent loop
 - **Tool-calling agent loop** — reads, writes, edits files; runs shell commands; git ops
@@ -48,7 +48,9 @@ aicode setup
 aicode
 ```
 
-The wizard walks you through everything: which providers to enable, pasting API keys (with masking), live key validation, picking default models, and configuring auto-routing. First-time users just run `aicode` and it auto-launches the wizard if no config exists.
+The wizard walks you through everything: which providers to enable, pasting API keys (with masking), live key validation, **fetching the actual model list from each provider's API**, browsing and picking models from a paginated searchable table, and configuring auto-routing. First-time users just run `aicode` and it auto-launches the wizard if no config exists.
+
+The model picker shows live data with context length, free-tier markers, vision/tool support, and descriptions — and gracefully falls back to known defaults if the API list call fails.
 
 ## Provider setup
 
@@ -322,9 +324,10 @@ aicode-agent/
 │   ├── session.py              # Session save/resume (JSON on disk)
 │   ├── diff_utils.py           # Diff preview utilities
 │   ├── exec_mode.py            # Non-interactive `aicode exec` mode
-│   ├── wizard.py               # Interactive setup wizard
+│   ├── wizard.py               # Interactive setup wizard (live model fetching)
 │   ├── mcp.py                  # MCP client (JSON-RPC over stdio)
 │   ├── autocommit.py           # Auto-commit after edits
+│   ├── models.py               # Live model list fetchers + KNOWN_MODELS metadata
 │   ├── providers/
 │   │   ├── base.py             # Provider, Message, ToolCall, Response, ToolSpec
 │   │   ├── openai_compat.py    # OpenAI/NIM/Groq/OpenRouter/Ollama/Together/...

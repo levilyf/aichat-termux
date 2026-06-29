@@ -277,11 +277,13 @@ def test_agent_initialization(tmp_path: Path):
 def test_wizard_metadata_complete():
     """Wizard has metadata for all 7 built-in providers."""
     from aicode.wizard import PROVIDER_META, _mask
-    assert set(PROVIDER_META) == {"nim", "gpt", "claude", "gemini", "groq", "openrouter", "ollama"}
+    assert set(PROVIDER_META) == {"nim", "openai", "claude", "gemini", "groq", "openrouter", "ollama"}
     for name, meta in PROVIDER_META.items():
         assert meta["label"]
         assert meta["default_model"]
-        assert isinstance(meta["alt_models"], list) and meta["alt_models"]
+        assert "tagline" in meta
+        assert "signup_url" in meta
+        assert "free" in meta
     # Masking helper
     assert _mask("short") == "*****"
     assert _mask("ab") == "**"
@@ -811,6 +813,137 @@ def test_mcp_tool_prefix_routing():
     result = asyncio.run(manager.call_tool("read_file", {}))
     assert not result.success
     assert "not an MCP tool" in result.output
+
+
+# ─── v3: model fetchers + upgraded wizard ───
+
+def test_model_info_display():
+    """ModelInfo.display_name and picker_line format correctly."""
+    from aicode.models import ModelInfo
+    m = ModelInfo(id="gpt-4o", name="GPT-4o", context_length=128000, is_free=False, description="Flagship model")
+    assert "GPT-4o" in m.display_name
+    assert "gpt-4o" in m.display_name
+    line = m.picker_line
+    assert "128,000" in line
+    assert "Flagship model" in line
+
+    m2 = ModelInfo(id="llama-free", name="Llama", is_free=True)
+    assert "FREE" in m2.picker_line
+
+
+def test_known_models_covers_all_providers():
+    """KNOWN_MODELS has entries for every supported provider."""
+    from aicode.models import KNOWN_MODELS
+    # At least one model per provider
+    nim_models = [k for k in KNOWN_MODELS if k.startswith("meta/") or k.startswith("qwen/") or k.startswith("mistralai/") or k.startswith("deepseek-ai/") or k.startswith("nvidia/")]
+    assert nim_models, "no NIM models in KNOWN_MODELS"
+    assert any(k.startswith("gpt-") for k in KNOWN_MODELS), "no OpenAI models"
+    assert any(k.startswith("claude-") for k in KNOWN_MODELS), "no Anthropic models"
+    assert any(k.startswith("gemini-") for k in KNOWN_MODELS), "no Gemini models"
+    assert any("llama-3" in k for k in KNOWN_MODELS if "groq" not in k), "no Groq models"
+    assert any(":free" in k for k in KNOWN_MODELS), "no OpenRouter free models"
+    assert any(":" in k and "free" not in k for k in KNOWN_MODELS), "no Ollama models"
+
+
+def test_fallback_models_returns_known_defaults():
+    """_fallback_models returns ModelInfo for each provider when API fails."""
+    from aicode.models import _fallback_models, ModelInfo
+    for provider in ["nim", "openai", "anthropic", "gemini", "groq", "openrouter", "ollama"]:
+        models = _fallback_models(provider)
+        assert models, f"no fallback models for {provider}"
+        assert all(isinstance(m, ModelInfo) for m in models)
+        assert all(m.id for m in models)
+    # Unknown provider returns empty
+    assert _fallback_models("unknown") == []
+
+
+def test_fallback_models_have_descriptions():
+    """Fallback models are enriched with descriptions from KNOWN_MODELS."""
+    from aicode.models import _fallback_models
+    nim = _fallback_models("nim")
+    llama = [m for m in nim if "llama-3.3-70b" in m.id][0]
+    assert llama.description, "Llama 3.3 70B should have a description"
+    assert llama.context_length == 131072
+    assert llama.is_free is True  # NIM models are free-tier
+
+
+def test_fetch_models_for_profile_falls_back_on_error(monkeypatch):
+    """fetch_models_for_profile returns fallbacks when the API call fails."""
+    import asyncio
+    from aicode.models import fetch_models_for_profile, _fallback_models
+    from aicode.config import Profile
+
+    # Create a profile with a fake key that will fail
+    profile = Profile(
+        name="test",
+        provider="nim",
+        model="m",
+        api_key="invalid-key",
+        base_url="https://invalid-url-that-does-not-exist.invalid/v1",
+    )
+    models = asyncio.run(fetch_models_for_profile(profile))
+    # Should fall back to known NIM models
+    assert models, "expected fallback models, got empty list"
+    assert any("llama" in m.id.lower() for m in models), "expected Llama in fallbacks"
+
+
+def test_fetch_models_for_profile_ollama_returns_defaults(monkeypatch):
+    """Ollama fetcher returns defaults when server isn't running."""
+    import asyncio
+    from aicode.models import fetch_models_for_profile
+    from aicode.config import Profile
+
+    profile = Profile(
+        name="ollama",
+        provider="ollama",
+        model="llama3.2:3b",
+        api_key="ollama",
+        base_url="http://localhost:99999/v1",  # not running
+    )
+    models = asyncio.run(fetch_models_for_profile(profile))
+    assert models, "expected fallback models when Ollama is down"
+    assert any("llama" in m.id.lower() for m in models)
+
+
+def test_wizard_v2_metadata_structure():
+    """PROVIDER_META has all the v2 fields."""
+    from aicode.wizard import PROVIDER_META
+    for name, meta in PROVIDER_META.items():
+        assert "label" in meta
+        assert "tagline" in meta
+        assert "env_var" in meta
+        assert "signup_url" in meta
+        assert "key_prefix" in meta
+        assert "default_model" in meta
+        assert "free" in meta
+        assert isinstance(meta["free"], bool)
+
+
+def test_wizard_v2_marks_free_providers():
+    """NIM, Gemini, Groq, OpenRouter, and Ollama are marked free."""
+    from aicode.wizard import PROVIDER_META
+    assert PROVIDER_META["nim"]["free"] is True
+    assert PROVIDER_META["gemini"]["free"] is True
+    assert PROVIDER_META["groq"]["free"] is True
+    assert PROVIDER_META["openrouter"]["free"] is True
+    assert PROVIDER_META["ollama"]["free"] is True
+    # OpenAI and Anthropic are paid
+    assert PROVIDER_META["openai"]["free"] is False
+    assert PROVIDER_META["claude"]["free"] is False
+
+
+def test_wizard_summary_step_runs(tmp_path: Path, monkeypatch, capsys):
+    """step_summary renders without error."""
+    from aicode.wizard import step_summary
+    from aicode.config import RoutingConfig
+    monkeypatch.setenv("AICODE_OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    # Should not raise
+    step_summary(
+        chosen=["nim", "ollama"],
+        keys={"nim": "${NVIDIA_API_KEY}", "ollama": "ollama"},
+        models_picked={"nim": "meta/llama-3.3-70b-instruct", "ollama": "llama3.2:3b"},
+        routing=RoutingConfig(coding="nim", reasoning="nim", simple="ollama", default="nim"),
+    )
 
 
 if __name__ == "__main__":
