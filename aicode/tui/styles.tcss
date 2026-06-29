@@ -1,0 +1,109 @@
+Screen: {
+    layout: horizontal;
+}
+
+#sidebar {
+    width: 24;
+    dock: left;
+    background: $panel;
+    border-right: solid $primary;
+    padding: 0 1;
+}
+
+#sidebar Title {
+    color: $text;
+    text-style: bold;
+    background: $boost;
+    padding: 0 1;
+    width: 100%;
+}
+
+#file-tree {
+    height: 1fr;
+    margin: 1 0;
+    scrollbar-size: 1 1;
+}
+
+#status-panel {
+    height: auto;
+    max-height: 8;
+    border-top: solid $primary;
+    padding: 0 1;
+    background: $boost;
+}
+
+#status-text {
+    color: $text-muted;
+}
+
+#main {
+    width: 1fr;
+    layout: vertical;
+}
+
+#header {
+    dock: top;
+    height: 1;
+    background: $primary;
+    color: $text;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#chat {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+.chat-msg {
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+.chat-msg.user {
+    border-left: outer $accent;
+    background: $boost;
+}
+
+.chat-msg.assistant {
+    border-left: outer $success;
+}
+
+.chat-msg.tool {
+    border-left: outer $warning;
+    color: $text-muted;
+}
+
+.chat-msg.error {
+    border-left: outer $error;
+    color: $error;
+}
+
+.chat-msg .role {
+    text-style: bold;
+    color: $primary;
+}
+
+.chat-msg.user .role { color: $accent; }
+.chat-msg.assistant .role { color: $success; }
+.chat-msg.tool .role { color: $warning; }
+
+#input-area {
+    dock: bottom;
+    height: 5;
+    layout: horizontal;
+    border-top: solid $primary;
+}
+
+#input {
+    width: 1fr;
+    border: none;
+    background: $panel;
+    padding: 0 1;
+}
+
+#input:focus {
+    border: none;
+    background: $boost;
+}

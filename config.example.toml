@@ -1,0 +1,74 @@
+# Example config for aicode — copy to ~/.config/aicode/config.toml and edit.
+# Run `aicode config init` to write this automatically.
+
+# ─────────────────────────── PROFILES ───────────────────────────
+# Each profile binds: provider + model + api_key + (optional) base_url
+# api_key can be a literal string OR "${ENV_VAR}" to read from env.
+
+[profiles.nim]
+provider = "nim"
+model = "meta/llama-3.3-70b-instruct"
+api_key = "${NVIDIA_API_KEY}"
+base_url = "https://integrate.api.nvidia.com/v1"
+
+[profiles.nim-coder]
+provider = "nim"
+model = "qwen/qwen2.5-coder-32b-instruct"
+api_key = "${NVIDIA_API_KEY}"
+base_url = "https://integrate.api.nvidia.com/v1"
+
+[profiles.gpt]
+provider = "openai"
+model = "gpt-4o"
+api_key = "${OPENAI_API_KEY}"
+base_url = "https://api.openai.com/v1"
+
+[profiles.claude]
+provider = "anthropic"
+model = "claude-3-5-sonnet-20241022"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[profiles.gemini]
+provider = "gemini"
+model = "gemini-2.0-flash"
+api_key = "${GEMINI_API_KEY}"
+
+[profiles.groq]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+api_key = "${GROQ_API_KEY}"
+base_url = "https://api.groq.com/openai/v1"
+
+[profiles.openrouter]
+provider = "openrouter"
+model = "anthropic/claude-3.5-sonnet"
+api_key = "${OPENROUTER_API_KEY}"
+base_url = "https://openrouter.ai/api/v1"
+
+[profiles.ollama]
+provider = "ollama"
+model = "llama3.2:3b"
+api_key = "ollama"
+base_url = "http://localhost:11434/v1"
+
+# ─────────────────────────── ROUTING ───────────────────────────
+# task_type -> profile name. Used by the auto-router.
+# Override per-turn with `/model <profile>`.
+
+[routing]
+coding = "nim-coder"      # code generation/editing → Qwen Coder on NIM
+reasoning = "claude"      # design/debug/explain → Claude
+simple = "groq"           # small talk / quick facts → Groq (fast)
+default = "nim"           # fallback
+
+# ─────────────────────────── SHELL ───────────────────────────
+
+[shell]
+require_approval = true   # ask before running risky commands (rm, mv, sudo, ...)
+timeout = 120             # seconds
+
+# ─────────────────────────── UI ───────────────────────────
+
+[ui]
+theme = "dark"
+show_file_tree = true
