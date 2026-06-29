@@ -72,3 +72,52 @@ timeout = 120             # seconds
 [ui]
 theme = "dark"
 show_file_tree = true
+
+# ─────────────────────────── CUSTOM SLASH COMMANDS ───────────────────────────
+# Define your own /commands — each maps to a prompt the agent runs.
+# Use $ARGS to inject whatever the user typed after the command.
+# Use $FILE to inject the contents of a file path the user provides.
+
+[commands.test]
+description = "Run tests and fix any failures"
+prompt = "Run the test suite (try pytest first, fall back to npm test), then fix any failures. Show me what you changed and why."
+
+[commands.lint]
+description = "Lint and fix style issues"
+prompt = "Run the linter on this project (try ruff for Python, eslint for JS), then fix the issues it reports."
+
+[commands.refactor]
+description = "Refactor a specific file or function — /refactor <path>"
+prompt = "Refactor $ARGS to be cleaner and more idiomatic. Preserve behavior. Explain your changes."
+
+[commands.explain]
+description = "Explain a file or concept — /explain <path>"
+prompt = "Explain $ARGS in detail. If it's a file, read it first. Cover what it does, how it works, and any non-obvious design choices."
+
+[commands.docstring]
+description = "Add docstrings to a file — /docstring <path>"
+prompt = "Read $ARGS and add Google-style docstrings to every public function and class. Don't change behavior."
+
+# ─────────────────────────── AUTO-COMMIT ───────────────────────────
+# Automatically git commit after the agent makes successful edits.
+# {summary} is replaced with a short summary of what changed.
+
+[auto_commit]
+enabled = false
+message_template = "chore: aicode — {summary}"
+require_clean_tree = true  # only auto-commit if the tree was clean before
+
+# ─────────────────────────── MCP SERVERS ───────────────────────────
+# Model Context Protocol servers — exposes external tools to the agent.
+# Each server runs as a subprocess speaking JSON-RPC over stdio.
+# Example: filesystem MCP server (gives the agent access to a sandboxed dir)
+
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/sandbox"]
+env = {}
+
+[mcp_servers.sqlite]
+command = "uvx"
+args = ["mcp-server-sqlite", "--db-path", "./data.db"]
+env = {}

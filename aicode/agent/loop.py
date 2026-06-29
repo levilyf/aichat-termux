@@ -55,6 +55,7 @@ class Agent:
         on_event: Optional[Callable[[AgentEvent], None]] = None,
         plan_mode: bool = False,
         session_id: Optional[str] = None,
+        mcp_manager: Optional["MCPManager"] = None,
     ) -> None:
         self.config = config
         self.cwd = cwd
@@ -71,12 +72,25 @@ class Agent:
         self.permissions = PermissionManager(config)
         self.session_cost = SessionCost(started_at=time.time())
         self.session_id = session_id
+        self.mcp_manager = mcp_manager
+
+        # Wire in MCP tools if available
+        if mcp_manager and mcp_manager.is_running():
+            from ..tools.mcp_tool import register_mcp_tools
+            register_mcp_tools(self.tools, mcp_manager)
+
+        # Track whether files were modified this turn (for auto-commit)
+        self._files_modified_this_turn = False
 
         # Build system prompt with memory
         memory = load_memory(cwd)
         sys_prompt = build_system_prompt(cwd, self.tools.names())
         if memory:
             sys_prompt += f"\n\n## Project Memory\n\n{memory}"
+        # Add custom command hints to the system prompt
+        if config.commands:
+            cmd_list = ", ".join(f"`/{name}`" for name in config.commands)
+            sys_prompt += f"\n\n## Custom commands available\nThe user has these custom slash commands: {cmd_list}. Mention them if relevant."
         if plan_mode:
             sys_prompt += (
                 "\n\n## PLAN MODE ACTIVE\n"
@@ -170,6 +184,11 @@ class Agent:
     async def chat(self, user_text: str) -> AsyncIterator[AgentEvent]:
         """Run one full agentic turn — may execute multiple tool calls."""
         self.history.append(Message(role="user", content=user_text))
+        self._files_modified_this_turn = False
+
+        # Check git tree state before the turn (for auto-commit later)
+        from ..autocommit import is_git_repo, is_clean_tree
+        was_clean = is_clean_tree(self.cwd) if is_git_repo(self.cwd) else False
 
         max_iterations = 12
         for _ in range(max_iterations):
@@ -214,6 +233,8 @@ class Agent:
 
             if not response.tool_calls:
                 self._emit(AgentEvent(type=AgentEventType.COMPLETE, text=assistant_content))
+                # Run auto-commit if files were modified
+                self._maybe_auto_commit(was_clean)
                 return
 
             # Execute each tool call (with permission check)
@@ -240,6 +261,9 @@ class Agent:
 
                 result = await self._execute_tool(tc)
                 self._emit(AgentEvent(type=AgentEventType.TOOL_RESULT, tool_result=result, tool_call=tc))
+                # Track file modifications for auto-commit
+                if tc.name in {"write_file", "edit_file"} and result.success:
+                    self._files_modified_this_turn = True
                 self.history.append(
                     Message(
                         role="tool",
@@ -258,8 +282,32 @@ class Agent:
                 text="(stopped after 12 tool iterations — use /clear and ask more specifically)",
             )
         )
+        # Also try auto-commit at the cap
+        self._maybe_auto_commit(was_clean)
+
+    def _maybe_auto_commit(self, was_clean_before: bool) -> None:
+        """Run auto-commit if conditions are met."""
+        try:
+            from ..autocommit import auto_commit_if_needed
+            msg = auto_commit_if_needed(
+                self.cwd,
+                self.config.auto_commit,
+                self._files_modified_this_turn,
+                was_clean_before,
+            )
+            if msg:
+                self._emit(AgentEvent(
+                    type=AgentEventType.COMPLETE,
+                    text=f"✓ Auto-committed: `{msg}`",
+                ))
+        except Exception as e:
+            self._emit(AgentEvent(type=AgentEventType.ERROR, error=f"auto-commit failed: {e}"))
 
     async def _execute_tool(self, tc: ToolCall) -> ToolResult:
+        # MCP tools are async — route them through the manager
+        if tc.name.startswith("mcp_") and self.mcp_manager:
+            return await self.mcp_manager.call_tool(tc.name, tc.arguments)
+
         try:
             result = self.tools.execute(tc.name, tc.arguments)
         except KeyError:

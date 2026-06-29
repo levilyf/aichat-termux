@@ -13,9 +13,13 @@ An autonomous coding agent that runs in your terminal — built for Termux (Andr
 - **`/compact`** — summarize conversation history to save context
 - **`/init`** — analyze project and generate AICODE.md
 - **`/review`** — review uncommitted git changes
-- **Permissions** — fine-grained allow/deny/ask rules per tool + safe/dangerous shell patterns
+- **Permissions** — fine-grained allow/deny/ask rules per tool + safe/dangerous shell patterns + **modal popup** for approvals
 - **Non-interactive mode** — `aicode exec "prompt"` + stdin piping for scripting
 - **Auto-routing** — picks the best profile for each task (coding / reasoning / simple), with smart fallback to only usable profiles
+- **Custom slash commands** — define your own `/commands` in config.toml with `$ARGS` substitution
+- **Auto-commit** — automatically git commit after successful edits (configurable)
+- **MCP support** — connect to Model Context Protocol servers for external tools (filesystem, databases, APIs)
+- **Collapsible tool calls** — tool output starts collapsed, click/expand to see details
 
 ### Provider support
 - **7 providers out of the box** — NVIDIA NIM, OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, Ollama (local)
@@ -152,10 +156,14 @@ aicode doctor                   # diagnose environment
 | `/memory edit` | write/edit AICODE.md |
 | `/files` | refresh file tree |
 | `/tools` | list available tools |
+| `/commands` | list your custom slash commands |
 | `/plan` | toggle plan mode |
 | `/review` | review uncommitted changes (git diff) |
 | `/permissions` | show permission rules |
+| `/autocommit` | toggle auto-commit after edits |
+| `/mcp` | show MCP server status |
 | `/quit` | exit |
+| `/<custom>` | any command you define in `[commands]` |
 
 ### AICODE.md — project memory
 
@@ -221,6 +229,82 @@ Session totals — 5 turn(s)
 
 Pricing is built in for all default models (NIM, OpenAI, Anthropic, Gemini, Groq, OpenRouter, Ollama). Edit `aicode/cost.py` to update prices.
 
+### Custom slash commands
+
+Define your own `/commands` in `config.toml`. Use `$ARGS` to inject whatever the user types after the command:
+
+```toml
+[commands.test]
+description = "Run tests and fix any failures"
+prompt = "Run the test suite (try pytest first), then fix any failures."
+
+[commands.refactor]
+description = "Refactor a file — /refactor <path>"
+prompt = "Refactor $ARGS to be cleaner. Preserve behavior."
+
+[commands.explain]
+description = "Explain a file — /explain <path>"
+prompt = "Read $ARGS and explain what it does in detail."
+```
+
+Then in the TUI:
+```
+/test
+/refactor src/main.py
+/explain src/auth/login.py
+```
+
+Run `/commands` inside the TUI to see all your custom commands.
+
+### Auto-commit
+
+Automatically git commit after the agent makes successful edits. Configure in `config.toml`:
+
+```toml
+[auto_commit]
+enabled = true
+message_template = "chore: aicode — {summary}"
+require_clean_tree = true  # only commit if the tree was clean before
+```
+
+Toggle on/off inside the TUI with `/autocommit`. The `{summary}` placeholder is replaced with a git diff stat (e.g. "3 files changed, 10 insertions(+)").
+
+### MCP (Model Context Protocol) support
+
+Connect to external MCP servers to give the agent additional tools (filesystem access, databases, APIs, etc.). Each server runs as a subprocess speaking JSON-RPC over stdio:
+
+```toml
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/sandbox"]
+env = {}
+
+[mcp_servers.sqlite]
+command = "uvx"
+args = ["mcp-server-sqlite", "--db-path", "./data.db"]
+```
+
+On startup, aicode spawns each MCP server, does the initialize handshake, discovers its tools, and registers them in the agent's tool registry with a `mcp_<server>_<tool>` prefix (to avoid name collisions). The agent can then call these tools transparently alongside the built-in ones.
+
+Run `/mcp` inside the TUI to see server status and tool counts. Browse available MCP servers at <https://github.com/modelcontextprotocol/servers>.
+
+### Permissions & approval modals
+
+Every tool call goes through a permission check:
+- **allow** — runs without asking (e.g. `read_file`, `list_files`, safe shell commands like `ls`, `git status`)
+- **ask** — pops up a modal showing the tool name + arguments, with **Allow (y)** / **Deny (n)** buttons (e.g. `write_file`, `edit_file`, unknown shell commands)
+- **deny** — blocked entirely (e.g. `rm -rf /`, `sudo`, `curl | sh`)
+
+Safe shell patterns (auto-allow even when `shell = ask`): `ls`, `pwd`, `cat`, `git status/diff/log`, `pytest`, `ruff`, `npm run`, `go test`, etc.
+
+Dangerous patterns (always ask, even if shell was allowed): `rm -rf /`, `sudo`, `dd`, `mkfs`, `shutdown`, `curl | sh`, `git push --force`.
+
+Run `/permissions` to see the full ruleset.
+
+### Collapsible tool calls
+
+Tool call output in the TUI starts **collapsed** — you see the tool name + args + success/fail icon, but not the (potentially long) output. Click or press Enter on a tool call to expand it and see the full output. This keeps the chat scrollable when the agent runs many tools in a row.
+
 ## Architecture
 
 ```
@@ -228,9 +312,10 @@ aicode-agent/
 ├── pyproject.toml              # package + entry point
 ├── requirements.txt
 ├── setup-termux.sh             # one-shot installer
+├── config.example.toml         # fully-documented example config
 ├── aicode/
 │   ├── __main__.py             # CLI: aicode / exec / setup / doctor / sessions
-│   ├── config.py               # TOML config + profiles + routing
+│   ├── config.py               # TOML config + profiles + routing + commands + auto_commit + mcp
 │   ├── cost.py                 # Pricing table + TurnCost + SessionCost
 │   ├── memory.py               # AICODE.md project memory loader
 │   ├── permissions.py          # Permission manager (allow/deny/ask)
@@ -238,6 +323,8 @@ aicode-agent/
 │   ├── diff_utils.py           # Diff preview utilities
 │   ├── exec_mode.py            # Non-interactive `aicode exec` mode
 │   ├── wizard.py               # Interactive setup wizard
+│   ├── mcp.py                  # MCP client (JSON-RPC over stdio)
+│   ├── autocommit.py           # Auto-commit after edits
 │   ├── providers/
 │   │   ├── base.py             # Provider, Message, ToolCall, Response, ToolSpec
 │   │   ├── openai_compat.py    # OpenAI/NIM/Groq/OpenRouter/Ollama/Together/...
@@ -249,13 +336,15 @@ aicode-agent/
 │   │   ├── file_ops.py         # read/write/edit/list/grep
 │   │   ├── shell.py            # bash exec with approval gate
 │   │   ├── git.py              # git wrapper
+│   │   ├── mcp_tool.py         # MCP tool wrapper → bridges into ToolRegistry
 │   │   └── registry.py         # default_registry()
 │   ├── agent/
-│   │   ├── loop.py             # streaming tool-calling loop (plan mode, cost, permissions)
+│   │   ├── loop.py             # streaming tool-calling loop (plan mode, cost, permissions, auto-commit, MCP)
 │   │   └── prompts.py          # system prompt
 │   └── tui/
-│       ├── app.py              # main Textual app (full slash-command set)
-│       ├── widgets.py          # ChatMessage, FileTreeWidget, StatusBar
+│       ├── app.py              # main Textual app (21+ slash commands)
+│       ├── widgets.py          # ChatMessage, FileTreeWidget, StatusBar, ToolCallWidget (collapsible)
+│       ├── modals.py           # PermissionModal + ConfirmModal
 │       └── styles.tcss         # textual CSS
 ```
 

@@ -8,6 +8,7 @@ from typing import Optional
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
+from textual.containers import Vertical
 from textual.widgets import Static, Tree
 
 
@@ -24,7 +25,6 @@ class ChatMessage(Static):
             "error": "Error",
             "system": "System",
         }.get(role, role)
-        # Render tool output as code, others as markdown
         if role in {"tool"}:
             renderable = Syntax(content, "text", theme="monokai", word_wrap=True)
         elif role in {"assistant", "system"}:
@@ -45,6 +45,45 @@ class ChatMessage(Static):
             self.update(Markdown(self.content))
         else:
             self.update(self.content)
+
+
+class ToolCallWidget(Static):
+    """A collapsible tool call display — header always visible, output toggleable."""
+
+    def __init__(self, tool_name: str, args_str: str, output: str = "", success: bool = True, expanded: bool = False) -> None:
+        self.tool_name = tool_name
+        self.args_str = args_str
+        self.output = output
+        self.success = success
+        self.expanded = expanded
+        self._render()
+        super().__init__(self._build_renderable(), markup=True, classes="chat-msg tool")
+        self.border_title = f"Tool: {tool_name}"
+
+    def _build_renderable(self):
+        from rich.markdown import Markdown
+        status_icon = "✓" if self.success else "✗"
+        color = "green" if self.success else "red"
+        indicator = "▼" if self.expanded else "▶"
+        header = f"[{color}]{status_icon}[/{color}] {indicator} [bold]{self.tool_name}[/bold]({self.args_str})"
+        if self.output and self.expanded:
+            full = f"{header}\n```\n{self.output[:1500]}\n```"
+            return Markdown(full)
+        return header
+
+    def update_result(self, output: str, success: bool) -> None:
+        """Update with the tool's result and re-render (stays collapsed)."""
+        self.output = output
+        self.success = success
+        self.expanded = False  # collapse by default after result
+        self.update(self._build_renderable())
+
+    def toggle(self) -> None:
+        self.expanded = not self.expanded
+        self.update(self._build_renderable())
+
+    def _render(self) -> None:
+        pass  # placeholder for any pre-init setup
 
 
 class FileTreeWidget(Tree):

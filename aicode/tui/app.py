@@ -24,11 +24,13 @@ from textual.widgets import (
 from ..agent.loop import Agent, AgentEvent, AgentEventType
 from ..config import Config, Profile
 from ..cost import SessionCost
+from ..mcp import MCPManager
 from ..memory import has_project_memory, init_project_memory, load_memory, write_project_memory
 from ..permissions import PermissionManager
 from ..session import list_sessions, load_session, save_session
 from ..tools.base import ToolResult
-from .widgets import ChatMessage, FileTreeWidget, StatusBar
+from .modals import ConfirmModal, PermissionModal
+from .widgets import ChatMessage, FileTreeWidget, StatusBar, ToolCallWidget
 
 SLASH_HELP = """\
 ## Slash commands
@@ -55,16 +57,21 @@ SLASH_HELP = """\
 - `/memory edit`         — write a new AICODE.md (opens editor)
 - `/files`               — refresh the file tree
 - `/tools`               — list available tools
+- `/commands`            — list your custom slash commands
 
 ### Workflow
 - `/plan`                — toggle plan mode (read-only, plans before executing)
 - `/review`              — review uncommitted changes (git diff)
 - `/permissions`         — show permission rules
+- `/autocommit`          — toggle auto-commit after edits
+- `/mcp`                 — show MCP server status
 
 ### Tips
 - **Enter** to send, **Shift+Enter** for newline
 - **Ctrl+C** to interrupt a running turn
+- **y/n** to approve/deny permission prompts
 - Pipe commands: `aicode exec "fix the bug"` (non-interactive)
+- Custom commands: define them under `[commands.<name>]` in config.toml
 """
 
 
@@ -91,6 +98,8 @@ class AICodeApp(App):
         self.initial_plan_mode = plan_mode
         self.session_id = session_id
         self.agent: Optional[Agent] = None
+        self.mcp_manager: Optional[MCPManager] = None
+        self._permission_response: Optional[bool] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -120,6 +129,10 @@ class AICodeApp(App):
         except Exception:
             pass
 
+        # Start MCP servers if configured
+        if self.config.mcp_servers:
+            asyncio.ensure_future(self._start_mcp())
+
         self.agent = Agent(
             config=self.config,
             cwd=self.cwd,
@@ -127,6 +140,7 @@ class AICodeApp(App):
             on_event=self._on_agent_event,
             plan_mode=self.initial_plan_mode,
             session_id=self.session_id,
+            mcp_manager=self.mcp_manager,
         )
 
         # Resume session if specified
@@ -145,12 +159,32 @@ class AICodeApp(App):
         else:
             bar.set_profile("auto", "")
 
-        self._add_chat_message(
-            "system",
-            "Welcome to **aicode** — Claude Code-style AI agent for Termux. "
-            "Type `/help` to see commands, or just ask me to do something.",
-        )
+        welcome_msg = "Welcome to **aicode** — Claude Code-style AI agent for Termux. "
+        if self.config.commands:
+            welcome_msg += f"Type `/commands` to see your {len(self.config.commands)} custom commands, or "
+        welcome_msg += "`/help` for all commands."
+        self._add_chat_message("system", welcome_msg)
         self.query_one("#input", TextArea).focus()
+
+    async def _start_mcp(self) -> None:
+        """Start MCP servers in the background."""
+        try:
+            self.mcp_manager = MCPManager(self.config.mcp_servers)
+            results = await self.mcp_manager.start_all()
+            # Wire into the agent
+            if self.agent:
+                self.agent.mcp_manager = self.mcp_manager
+                from ..tools.mcp_tool import register_mcp_tools
+                register_mcp_tools(self.agent.tools, self.mcp_manager)
+            lines = ["**MCP servers started:**"]
+            for name, tools in results.items():
+                if tools and not tools[0].startswith("(failed"):
+                    lines.append(f"- `{name}` — {len(tools)} tool(s): {', '.join(tools[:3])}")
+                else:
+                    lines.append(f"- `{name}` — {tools[0] if tools else 'no tools'}")
+            self._add_chat_message("system", "\n".join(lines))
+        except Exception as e:
+            self._add_chat_message("error", f"MCP startup failed: {e}")
 
     def _add_chat_message(self, role: str, content: str) -> ChatMessage:
         chat = self.query_one("#chat", Container)
@@ -165,14 +199,17 @@ class AICodeApp(App):
         elif event.type == AgentEventType.TOOL_CALL:
             tc = event.tool_call
             args_str = ", ".join(f"{k}={v!r}" for k, v in tc.arguments.items())
-            text = f"**→ {tc.name}**({args_str})"
-            self.call_from_thread(self._add_chat_message, "tool", text)
+            # Show just the header — output will come in TOOL_RESULT
+            self.call_from_thread(self._add_tool_call_header, tc.name, args_str)
         elif event.type == AgentEventType.TOOL_RESULT:
             res = event.tool_result
-            preview = res.output[:1200] + ("..." if len(res.output) > 1200 else "")
-            status = "✓" if res.success else "✗"
-            text = f"**{status} {event.tool_call.name}**\n```\n{preview}\n```"
-            self.call_from_thread(self._add_chat_message, "tool", text)
+            preview = res.output[:1500] + ("..." if len(res.output) > 1500 else "")
+            self.call_from_thread(
+                self._update_tool_call_result,
+                event.tool_call.name,
+                res.success,
+                preview,
+            )
         elif event.type == AgentEventType.PROFILE_SWITCHED:
             profile_name = event.profile or ""
             profile = self.config.profiles.get(profile_name)
@@ -187,6 +224,23 @@ class AICodeApp(App):
             self.call_from_thread(self._add_chat_message, "system", f"## Plan\n\n{event.plan}")
         elif event.type == AgentEventType.COMPLETE:
             pass
+
+    def _add_tool_call_header(self, tool_name: str, args_str: str) -> None:
+        """Add a collapsible tool call widget — starts collapsed, shows header only."""
+        chat = self.query_one("#chat", Container)
+        widget = ToolCallWidget(tool_name=tool_name, args_str=args_str, output="", success=True, expanded=False)
+        chat.mount(widget)
+        chat.scroll_end(animate=False)
+
+    def _update_tool_call_result(self, tool_name: str, success: bool, output: str) -> None:
+        """Update the most recent ToolCallWidget with the result."""
+        chat = self.query_one("#chat", Container)
+        children = list(chat.children)
+        for child in reversed(children):
+            if isinstance(child, ToolCallWidget):
+                child.update_result(output, success)
+                break
+        chat.scroll_end(animate=False)
 
     def _append_text_delta(self, text: str) -> None:
         chat = self.query_one("#chat", Container)
@@ -314,10 +368,75 @@ class AICodeApp(App):
             asyncio.ensure_future(self._do_review())
         elif cmd == "permissions":
             self._add_chat_message("system", self.agent.permissions.summary())
+        elif cmd == "commands":
+            self._show_custom_commands()
+        elif cmd == "autocommit":
+            self._toggle_autocommit()
+        elif cmd == "mcp":
+            self._show_mcp_status()
         elif cmd in {"quit", "exit"}:
             self.exit()
         else:
-            self._add_chat_message("error", f"Unknown command: /{cmd}. Try /help.")
+            # Check if it's a custom command
+            if cmd in self.config.commands:
+                self._run_custom_command(cmd, arg)
+            else:
+                self._add_chat_message("error", f"Unknown command: /{cmd}. Try /help.")
+
+    def _show_custom_commands(self) -> None:
+        if not self.config.commands:
+            self._add_chat_message("system", "No custom commands configured. Add them under `[commands.<name>]` in config.toml.")
+            return
+        lines = ["**Custom commands:**", ""]
+        for name, c in self.config.commands.items():
+            desc = f" — {c.description}" if c.description else ""
+            lines.append(f"- `/{name}`{desc}")
+        lines.append("")
+        lines.append("Use `$ARGS` in the prompt to inject arguments. e.g. `/refactor src/main.py`")
+        self._add_chat_message("system", "\n".join(lines))
+
+    def _run_custom_command(self, name: str, arg: str) -> None:
+        """Run a user-defined custom slash command."""
+        cmd = self.config.commands[name]
+        prompt = cmd.prompt
+        # Substitute $ARGS
+        if "$ARGS" in prompt:
+            prompt = prompt.replace("$ARGS", arg)
+        elif arg:
+            prompt = f"{prompt}\n\nArguments: {arg}"
+        self._add_chat_message("user", prompt)
+        self._run_turn(prompt)
+
+    def _toggle_autocommit(self) -> None:
+        self.config.auto_commit.enabled = not self.config.auto_commit.enabled
+        state = "ON" if self.config.auto_commit.enabled else "OFF"
+        msg = f"Auto-commit is now **{state}**."
+        if self.config.auto_commit.enabled:
+            msg += f" Message template: `{self.config.auto_commit.message_template}`"
+            if self.config.auto_commit.require_clean_tree:
+                msg += " Only commits when the tree was clean before the turn."
+        self._add_chat_message("system", msg)
+
+    def _show_mcp_status(self) -> None:
+        if not self.mcp_manager:
+            self._add_chat_message("system", "No MCP servers configured. Add them under `[mcp_servers.<name>]` in config.toml.")
+            return
+        if not self.mcp_manager.is_running():
+            self._add_chat_message("system", "MCP servers are not running yet.")
+            return
+        lines = ["**MCP server status:**", ""]
+        for name in self.config.mcp_servers:
+            client = self.mcp_manager.get_client(name)
+            if client:
+                tools = client.get_tool_names()
+                lines.append(f"- `{name}` — running, {len(tools)} tool(s)")
+                for t in tools[:5]:
+                    lines.append(f"  - `{t}`")
+                if len(tools) > 5:
+                    lines.append(f"  - ... and {len(tools) - 5} more")
+            else:
+                lines.append(f"- `{name}` — not running")
+        self._add_chat_message("system", "\n".join(lines))
 
     def _clear_chat(self) -> None:
         chat = self.query_one("#chat", Container)
@@ -447,8 +566,25 @@ class AICodeApp(App):
             self._add_chat_message("error", f"Agent error: {e}")
 
     async def request_approval(self, command: str) -> bool:
-        """For v1, deny by default. v2: pop a modal."""
-        return False
+        """Pop a modal asking the user to approve a command."""
+        # Parse the command back into a tool name + args for display
+        # The agent passes "tool_name({args})" format
+        return await self._show_permission_modal("shell", {"command": command}, "The agent wants to run a shell command.")
+
+    async def request_permission(self, tool_name: str, args: dict) -> bool:
+        """Pop a modal for any tool that needs permission."""
+        perm = self.agent.permissions.get_permission(tool_name, args)
+        if perm == "allow":
+            return True
+        if perm == "deny":
+            return False
+        return await self._show_permission_modal(tool_name, args, f"The agent wants to use `{tool_name}`.")
+
+    async def _show_permission_modal(self, tool_name: str, args: dict, reason: str) -> bool:
+        """Show the permission modal and await the user's response."""
+        from .modals import PermissionModal
+        result = await self.push_screen_wait(PermissionModal(tool_name, args, reason))
+        return bool(result)
 
     async def action_clear_screen(self) -> None:
         self._clear_chat()
@@ -456,3 +592,5 @@ class AICodeApp(App):
     async def on_unmount(self) -> None:
         if self.agent:
             await self.agent.close()
+        if self.mcp_manager:
+            await self.mcp_manager.stop_all()

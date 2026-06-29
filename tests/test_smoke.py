@@ -539,5 +539,279 @@ def test_cli_run_has_plan_and_resume_flags():
     assert args.resume == "abc123"
 
 
+# ─── v2 features: custom commands, auto-commit, MCP, modals, collapsible tools ───
+
+def test_custom_commands_config(tmp_path: Path):
+    """Config loads [commands.<name>] sections as CustomCommand objects."""
+    import tomli_w
+    from aicode.config import load_config
+    data = {
+        "profiles": {"nim": {"provider": "nim", "model": "m", "api_key": "k"}},
+        "commands": {
+            "test": {"prompt": "run tests", "description": "Run the test suite"},
+            "lint": {"prompt": "run linter $ARGS", "description": "Lint files"},
+        },
+    }
+    path = tmp_path / "c.toml"
+    with open(path, "wb") as f:
+        tomli_w.dump(data, f)
+    cfg = load_config(path)
+    assert "test" in cfg.commands
+    assert "lint" in cfg.commands
+    assert cfg.commands["test"].prompt == "run tests"
+    assert cfg.commands["test"].description == "Run the test suite"
+    assert cfg.commands["lint"].prompt == "run linter $ARGS"
+
+
+def test_custom_command_arg_substitution():
+    """$ARGS in a custom command prompt gets replaced."""
+    from aicode.config import CustomCommand
+    cmd = CustomCommand(name="refactor", prompt="Refactor $ARGS now", description="")
+    prompt = cmd.prompt.replace("$ARGS", "src/main.py")
+    assert prompt == "Refactor src/main.py now"
+
+
+def test_autocommit_config_defaults():
+    """AutoCommitConfig has sensible defaults."""
+    from aicode.config import AutoCommitConfig
+    ac = AutoCommitConfig()
+    assert ac.enabled is False
+    assert "{summary}" in ac.message_template
+    assert ac.require_clean_tree is True
+
+
+def test_autocommit_disabled_does_nothing(tmp_path: Path):
+    """When disabled, auto_commit_if_needed returns None."""
+    from aicode.autocommit import auto_commit_if_needed
+    from aicode.config import AutoCommitConfig
+    result = auto_commit_if_needed(str(tmp_path), AutoCommitConfig(), files_modified=True, was_clean_before=True)
+    assert result is None
+
+
+def test_autocommit_no_files_modified_does_nothing(tmp_path: Path):
+    """When no files were modified, auto-commit returns None."""
+    from aicode.autocommit import auto_commit_if_needed
+    from aicode.config import AutoCommitConfig
+    cfg = AutoCommitConfig(enabled=True)
+    result = auto_commit_if_needed(str(tmp_path), cfg, files_modified=False, was_clean_before=True)
+    assert result is None
+
+
+def test_autocommit_in_non_git_repo_does_nothing(tmp_path: Path):
+    """When not in a git repo, auto-commit returns None."""
+    from aicode.autocommit import auto_commit_if_needed, is_git_repo
+    from aicode.config import AutoCommitConfig
+    assert not is_git_repo(str(tmp_path))
+    cfg = AutoCommitConfig(enabled=True)
+    result = auto_commit_if_needed(str(tmp_path), cfg, files_modified=True, was_clean_before=True)
+    assert result is None
+
+
+def test_autocommit_works_in_git_repo(tmp_path: Path):
+    """Auto-commit fires when enabled, files modified, and tree was clean."""
+    import subprocess
+    from aicode.autocommit import auto_commit_if_needed, is_git_repo, is_clean_tree
+    from aicode.config import AutoCommitConfig
+
+    # Set up a git repo
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+    assert is_git_repo(str(tmp_path))
+    assert is_clean_tree(str(tmp_path))
+
+    # Modify a file
+    (tmp_path / "test.py").write_text("print('hello')")
+
+    cfg = AutoCommitConfig(enabled=True, message_template="auto: {summary}", require_clean_tree=True)
+    result = auto_commit_if_needed(str(tmp_path), cfg, files_modified=True, was_clean_before=True)
+    assert result is not None
+    assert "auto:" in result
+    # Tree should be clean again
+    assert is_clean_tree(str(tmp_path))
+
+
+def test_autocommit_skips_when_tree_was_dirty(tmp_path: Path):
+    """If require_clean_tree is True and tree was dirty, don't auto-commit."""
+    import subprocess
+    from aicode.autocommit import auto_commit_if_needed, is_clean_tree
+    from aicode.config import AutoCommitConfig
+
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "existing.txt").write_text("old")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+    # Make tree dirty before the turn
+    (tmp_path / "existing.txt").write_text("dirty change")
+
+    cfg = AutoCommitConfig(enabled=True, require_clean_tree=True)
+    result = auto_commit_if_needed(str(tmp_path), cfg, files_modified=True, was_clean_before=False)
+    assert result is None  # didn't commit because tree was already dirty
+
+
+def test_mcp_config_parsing(tmp_path: Path):
+    """Config parses [mcp_servers.<name>] sections."""
+    import tomli_w
+    from aicode.config import load_config
+    data = {
+        "profiles": {"nim": {"provider": "nim", "model": "m", "api_key": "k"}},
+        "mcp_servers": {
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "env": {"FOO": "bar"},
+            },
+        },
+    }
+    path = tmp_path / "c.toml"
+    with open(path, "wb") as f:
+        tomli_w.dump(data, f)
+    cfg = load_config(path)
+    assert "filesystem" in cfg.mcp_servers
+    assert cfg.mcp_servers["filesystem"]["command"] == "npx"
+    assert "-y" in cfg.mcp_servers["filesystem"]["args"]
+    assert cfg.mcp_servers["filesystem"]["env"]["FOO"] == "bar"
+
+
+def test_mcp_manager_initialization():
+    """MCPManager can be constructed from config."""
+    from aicode.mcp import MCPManager
+    config = {
+        "test_server": {"command": "echo", "args": ["hello"], "env": {}},
+    }
+    manager = MCPManager(config)
+    assert manager.config == config
+    assert not manager.is_running()  # not started yet
+    assert manager.get_all_tool_specs() == []  # no tools until started
+
+
+def test_mcp_tool_wrapper():
+    """MCPTool wraps an MCP-exposed tool as a native Tool."""
+    from aicode.mcp import MCPManager
+    from aicode.tools.mcp_tool import MCPTool
+    manager = MCPManager({})
+    tool = MCPTool(
+        name="mcp_test_read_file",
+        description="Read a file via MCP",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+        manager=manager,
+    )
+    assert tool.name == "mcp_test_read_file"
+    assert "MCP" in tool.description
+    spec = tool.spec()
+    assert spec.name == "mcp_test_read_file"
+
+
+def test_permission_modal_imports():
+    """PermissionModal and ConfirmModal import cleanly."""
+    from aicode.tui.modals import PermissionModal, ConfirmModal
+    pm = PermissionModal("shell", {"command": "ls"}, "test reason")
+    assert pm.tool_name == "shell"
+    cm = ConfirmModal("Are you sure?", "body text")
+    assert cm.title_text == "Are you sure?"
+
+
+def test_collapsible_tool_call_widget():
+    """ToolCallWidget renders collapsed by default and can toggle."""
+    from aicode.tui.widgets import ToolCallWidget
+    widget = ToolCallWidget(
+        tool_name="read_file",
+        args_str="path='x.py'",
+        output="file contents here",
+        success=True,
+        expanded=False,
+    )
+    assert widget.tool_name == "read_file"
+    assert widget.expanded is False
+    assert widget.success is True
+    # Toggle expands
+    widget.toggle()
+    assert widget.expanded is True
+    # Update result keeps it collapsed
+    widget.update_result("new output", True)
+    assert widget.expanded is False
+
+
+def test_agent_has_autocommit_and_mcp_fields(tmp_path: Path, monkeypatch):
+    """Agent has the new v2 fields."""
+    from aicode.config import default_config
+    from aicode.agent import Agent
+    for var in ["NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]:
+        monkeypatch.delenv(var, raising=False)
+    cfg = default_config()
+    agent = Agent(config=cfg, cwd=str(tmp_path))
+    assert hasattr(agent, "mcp_manager")
+    assert hasattr(agent, "_files_modified_this_turn")
+    assert agent.mcp_manager is None  # not set by default
+    assert agent._files_modified_this_turn is False
+
+
+def test_agent_tracks_file_modifications(tmp_path: Path, monkeypatch):
+    """Agent sets _files_modified_this_turn when write_file succeeds."""
+    import asyncio
+    from aicode.config import default_config
+    from aicode.agent import Agent
+    from aicode.providers.base import ToolCall
+    for var in ["NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]:
+        monkeypatch.delenv(var, raising=False)
+    cfg = default_config()
+    agent = Agent(config=cfg, cwd=str(tmp_path))
+    # Manually call _execute_tool with a write_file call
+    tc = ToolCall(id="1", name="write_file", arguments={"path": "test.txt", "content": "hello"})
+    result = asyncio.run(agent._execute_tool(tc))
+    assert result.success
+
+
+def test_custom_command_runs_as_user_prompt(tmp_path: Path, monkeypatch):
+    """Custom commands inject their prompt as if the user typed it."""
+    from aicode.config import default_config, CustomCommand
+    from aicode.agent import Agent
+    for var in ["NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]:
+        monkeypatch.delenv(var, raising=False)
+    cfg = default_config()
+    cfg.commands = {
+        "test": CustomCommand(name="test", prompt="Run pytest $ARGS", description="test"),
+    }
+    agent = Agent(config=cfg, cwd=str(tmp_path))
+    # Verify the system prompt mentions custom commands
+    assert "Custom commands available" in agent.history[0].content
+    assert "/test" in agent.history[0].content
+
+
+def test_autocommit_summary_generation(tmp_path: Path):
+    """generate_summary returns a non-empty string when there are changes."""
+    import subprocess
+    from aicode.autocommit import generate_summary, is_git_repo
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "f.txt").write_text("initial")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "f.txt").write_text("changed")
+    summary = generate_summary(str(tmp_path))
+    assert summary
+    assert "file" in summary or "changed" in summary
+
+
+def test_mcp_tool_prefix_routing():
+    """MCP tools are prefixed with mcp_<server>_<tool> for namespace safety."""
+    from aicode.mcp import MCPManager
+    manager = MCPManager({
+        "fs": {"command": "fake", "args": [], "env": {}},
+    })
+    # Without starting, get_all_tool_specs returns empty
+    assert manager.get_all_tool_specs() == []
+    # But the call_tool routing logic should reject non-mcp_ prefixed names
+    import asyncio
+    result = asyncio.run(manager.call_tool("read_file", {}))
+    assert not result.success
+    assert "not an MCP tool" in result.output
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

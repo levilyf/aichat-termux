@@ -116,11 +116,34 @@ class UIConfig:
 
 
 @dataclass
+class CustomCommand:
+    """A user-defined slash command. Maps /name → fixed prompt."""
+
+    name: str
+    prompt: str
+    description: str = ""
+
+
+@dataclass
+class AutoCommitConfig:
+    """Auto-commit settings — automatically git commit after successful edits."""
+
+    enabled: bool = False
+    message_template: str = "chore: aicode changes — {summary}"
+    # If true, only auto-commit when the working tree was clean before the turn
+    require_clean_tree: bool = True
+
+
+@dataclass
 class Config:
     profiles: Dict[str, Profile] = field(default_factory=dict)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     shell: ShellConfig = field(default_factory=ShellConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    commands: Dict[str, CustomCommand] = field(default_factory=dict)
+    auto_commit: AutoCommitConfig = field(default_factory=AutoCommitConfig)
+    # MCP servers: name → {command, args, env}
+    mcp_servers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     path: Path = DEFAULT_CONFIG_PATH
 
     def get_profile(self, name: str) -> Profile:
@@ -273,10 +296,39 @@ def load_config(path: Optional[Path] = None) -> Config:
         show_file_tree=ui_data.get("show_file_tree", True),
     )
 
+    # Custom commands: [commands.<name>] prompt = "..." description = "..."
+    commands: Dict[str, CustomCommand] = {}
+    for name, c in (data.get("commands") or {}).items():
+        commands[name] = CustomCommand(
+            name=name,
+            prompt=c.get("prompt", ""),
+            description=c.get("description", ""),
+        )
+
+    # Auto-commit: [auto_commit] enabled = true ...
+    ac_data = data.get("auto_commit") or {}
+    auto_commit = AutoCommitConfig(
+        enabled=ac_data.get("enabled", False),
+        message_template=ac_data.get("message_template", "chore: aicode changes — {summary}"),
+        require_clean_tree=ac_data.get("require_clean_tree", True),
+    )
+
+    # MCP servers: [mcp_servers.<name>] command = "..." args = [...]
+    mcp_servers: Dict[str, Dict[str, Any]] = {}
+    for name, s in (data.get("mcp_servers") or {}).items():
+        mcp_servers[name] = {
+            "command": s.get("command", ""),
+            "args": s.get("args", []),
+            "env": s.get("env", {}),
+        }
+
     return Config(
         profiles=profiles,
         routing=routing,
         shell=shell,
         ui=ui,
+        commands=commands,
+        auto_commit=auto_commit,
+        mcp_servers=mcp_servers,
         path=target,
     )
