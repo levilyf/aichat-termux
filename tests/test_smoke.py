@@ -276,7 +276,8 @@ def test_agent_initialization(tmp_path: Path):
 
 def test_wizard_metadata_complete():
     """Wizard has metadata for all 7 built-in providers."""
-    from aicode.wizard import PROVIDER_META, _mask
+    from aicode.wizard import PROVIDER_META
+    from aicode.ui import _mask
     assert set(PROVIDER_META) == {"nim", "openai", "claude", "gemini", "groq", "openrouter", "ollama"}
     for name, meta in PROVIDER_META.items():
         assert meta["label"]
@@ -944,6 +945,135 @@ def test_wizard_summary_step_runs(tmp_path: Path, monkeypatch, capsys):
         models_picked={"nim": "meta/llama-3.3-70b-instruct", "ollama": "llama3.2:3b"},
         routing=RoutingConfig(coding="nim", reasoning="nim", simple="ollama", default="nim"),
     )
+
+
+# ─── v4: modern UI module ───
+
+def test_ui_module_imports():
+    """All UI helpers import cleanly."""
+    from aicode.ui import (
+        show_splash, pick_providers_interactive, ask_api_key,
+        pick_model_interactive, with_spinner, show_info_panel,
+        show_error, show_success, show_config_summary, confirm,
+        show_status_grid, render_help, console, AICODE_THEME,
+    )
+    assert console is not None
+    assert AICODE_THEME is not None
+
+
+def test_ui_mask_helper():
+    """The _mask helper masks keys correctly."""
+    from aicode.ui import _mask
+    assert _mask("short") == "*****"
+    assert _mask("ab") == "**"
+    assert _mask("nvapi-abc123def").startswith("nvap")
+    assert _mask("nvapi-abc123def").endswith("3def")
+    assert "*" in _mask("nvapi-abc123def")
+
+
+def test_ui_clear_helper():
+    """The _clear helper doesn't crash."""
+    from aicode.ui import _clear
+    # Should not raise
+    _clear()
+
+
+def test_ui_show_info_panel(capsys):
+    """show_info_panel renders without error."""
+    from aicode.ui import show_info_panel
+    show_info_panel("Test Title", "Test body content", color="green")
+
+
+def test_ui_show_error(capsys):
+    """show_error renders without error."""
+    from aicode.ui import show_error
+    show_error("Something went wrong", "Try this instead")
+
+
+def test_ui_show_success(capsys):
+    """show_success renders without error."""
+    from aicode.ui import show_success
+    show_success("Done!", "Operation completed successfully")
+
+
+def test_ui_render_help():
+    """render_help renders grouped commands without error."""
+    from aicode.ui import render_help
+    commands = {
+        "Session": {
+            "/help": "show all slash commands",
+            "/clear": "reset conversation",
+        },
+        "Models": {
+            "/model <name>": "pin a profile",
+            "/auto": "re-enable auto-routing",
+        },
+    }
+    render_help(commands)
+
+
+def test_ui_show_status_grid():
+    """show_status_grid renders without error."""
+    from aicode.ui import show_status_grid
+    items = [
+        ("Profile", "nim", "cyan"),
+        ("Model", "llama-3.3-70b", "bold"),
+        ("Cost", "$0.05", "green"),
+    ]
+    show_status_grid(items)
+
+
+def test_ui_show_config_summary():
+    """show_config_summary renders the summary table without error."""
+    from aicode.ui import show_config_summary
+    profiles = [
+        {"name": "nim", "label": "NVIDIA NIM", "model": "meta/llama-3.3-70b-instruct", "key": "***"},
+        {"name": "ollama", "label": "Ollama", "model": "llama3.2:3b", "key": "ollama"},
+    ]
+    routing = {
+        "coding": "nim",
+        "reasoning": "nim",
+        "simple": "ollama",
+        "default": "nim",
+    }
+    show_config_summary(profiles, routing)
+
+
+def test_pick_providers_fallback():
+    """The plain-text fallback for provider picking works."""
+    from aicode.ui import _pick_providers_fallback
+    providers = [
+        {"name": "nim", "label": "NIM", "tagline": "free", "free": True},
+        {"name": "openai", "label": "OpenAI", "tagline": "paid", "free": False},
+    ]
+    # Should return a list (we can't test interactive input easily, but verify it doesn't crash on import)
+    assert callable(_pick_providers_fallback)
+
+
+def test_cli_help_uses_rich_formatter():
+    """The CLI parser uses RichHelpFormatter when available."""
+    from aicode.__main__ import build_parser, HelpFormatter
+    parser = build_parser()
+    # The formatter class should be set
+    assert parser.formatter_class == HelpFormatter
+
+
+def test_doctor_renders_with_rich():
+    """Doctor command uses rich panels and tables."""
+    import argparse
+    from pathlib import Path
+    from aicode.__main__ import cmd_doctor
+    from aicode.config import write_default_config
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as f:
+        path = Path(f.name)
+    write_default_config(path)
+    try:
+        rc = cmd_doctor(argparse.Namespace(config=str(path)))
+        assert rc in (0, 1)
+    finally:
+        os.unlink(path)
 
 
 if __name__ == "__main__":

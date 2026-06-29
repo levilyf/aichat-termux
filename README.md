@@ -6,6 +6,7 @@ An autonomous coding agent that runs in your terminal — built for Termux (Andr
 
 ### Claude Code-level capabilities
 - **Full TUI** (Textual) — sidebar with file tree, streaming chat panel, status bar with live cost, multi-line input
+- **Modern CLI UX** — rich panels + tables + spinners, questionary interactive prompts (checkboxes, searchable selects), rich-argparse --help, animated splash screen
 - **Plan mode** — `/plan` makes the agent read-only and produce a plan before any changes
 - **AICODE.md memory** — project context auto-loaded into every turn (like CLAUDE.md)
 - **Cost tracking** — tokens + $ per turn and per session, in the status bar and via `/status` `/cost`
@@ -324,10 +325,11 @@ aicode-agent/
 │   ├── session.py              # Session save/resume (JSON on disk)
 │   ├── diff_utils.py           # Diff preview utilities
 │   ├── exec_mode.py            # Non-interactive `aicode exec` mode
-│   ├── wizard.py               # Interactive setup wizard (live model fetching)
+│   ├── wizard.py               # Interactive setup wizard (live model fetching, questionary UI)
 │   ├── mcp.py                  # MCP client (JSON-RPC over stdio)
 │   ├── autocommit.py           # Auto-commit after edits
 │   ├── models.py               # Live model list fetchers + KNOWN_MODELS metadata
+│   ├── ui.py                   # Modern CLI components (splash, panels, spinners, questionary)
 │   ├── providers/
 │   │   ├── base.py             # Provider, Message, ToolCall, Response, ToolSpec
 │   │   ├── openai_compat.py    # OpenAI/NIM/Groq/OpenRouter/Ollama/Together/...

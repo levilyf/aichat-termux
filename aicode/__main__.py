@@ -16,6 +16,13 @@ from .session import list_sessions, load_session
 from .tui.app import AICodeApp
 from .wizard import run_wizard
 
+# Use rich-argparse for beautiful --help output
+try:
+    from rich_argparse import RichHelpFormatter
+    HelpFormatter = RichHelpFormatter
+except ImportError:
+    HelpFormatter = argparse.HelpFormatter
+
 
 def cmd_config_init(args: argparse.Namespace) -> int:
     path = write_default_config(Path(args.path) if args.path else None)
@@ -89,27 +96,81 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    print(f"aicode v{__version__}")
-    print(f"python: {sys.version.split()[0]}")
-    print(f"platform: {sys.platform}")
-    print()
+    """Diagnose the environment + config — beautifully."""
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from .ui import show_splash
+
+    console = Console()
+
+    # Header
+    console.print(Panel(
+        Text.from_markup(f"[bold cyan]aicode[/bold cyan] [dim]v{__version__}[/dim] — system check"),
+        border_style="cyan",
+        padding=(0, 2),
+    ))
+    console.print()
+
+    # Environment table
+    env_table = Table(title="[bold]Environment[/bold]", show_header=False, box=None, padding=(0, 2))
+    env_table.add_column("Key", style="dim", width=15)
+    env_table.add_column("Value", width=50)
+    env_table.add_row("python", sys.version.split()[0])
+    env_table.add_row("platform", sys.platform)
     cfg = load_config(Path(args.config) if args.config else None)
-    print(f"config: {cfg.path}")
-    print()
-    print("Profiles:")
+    env_table.add_row("config", str(cfg.path))
+    console.print(env_table)
+    console.print()
+
+    # Profiles table
+    ptable = Table(
+        title="[bold]Profiles[/bold]",
+        show_header=True,
+        header_style="bold magenta",
+        border_style="bright_black",
+        padding=(0, 2),
+    )
+    ptable.add_column("Status", width=6)
+    ptable.add_column("Name", style="bold", width=14)
+    ptable.add_column("Provider", width=12)
+    ptable.add_column("Model", width=40)
+
     all_ok = True
     for name, p in cfg.profiles.items():
         has_key = bool(p.resolved_api_key()) or p.provider == "ollama"
-        marker = "✓" if has_key else "✗"
-        print(f"  {marker} {name:<14} {p.provider:<12} {p.model}")
+        marker = "[green]✓[/green]" if has_key else "[red]✗[/red]"
+        ptable.add_row(marker, name, p.provider, p.model)
         if not has_key:
             all_ok = False
-    print()
+    console.print(ptable)
+    console.print()
+
+    # Routing summary
+    rtable = Table(title="[bold]Routing[/bold]", show_header=False, box=None, padding=(0, 2))
+    rtable.add_column("Task", style="dim", width=15)
+    rtable.add_column("Profile", width=15)
+    rtable.add_row("coding", cfg.routing.coding or "(unset)")
+    rtable.add_row("reasoning", cfg.routing.reasoning or "(unset)")
+    rtable.add_row("simple", cfg.routing.simple or "(unset)")
+    rtable.add_row("default", cfg.routing.default or "(unset)")
+    console.print(rtable)
+    console.print()
+
     if all_ok:
-        print("✓ All profiles are ready.")
+        console.print(Panel(
+            "[bold green]✓ All profiles are ready.[/bold green]\n\n[dim]Run [bold]aicode[/bold] to launch.[/dim]",
+            border_style="green",
+            padding=(1, 2),
+        ))
     else:
-        print("✗ Some profiles are missing API keys. Edit the config and set them,")
-        print("  or set the matching environment variables.")
+        console.print(Panel(
+            "[bold yellow]⚠ Some profiles are missing API keys.[/bold yellow]\n\n"
+            "[dim]Run [bold]aicode setup[/bold] to fix, or edit the config manually.[/dim]",
+            border_style="yellow",
+            padding=(1, 2),
+        ))
     return 0 if all_ok else 1
 
 
@@ -136,14 +197,19 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="aicode",
-        description="AI coding agent for Termux — Claude Code-style with multi-provider support (NVIDIA NIM, OpenAI, Anthropic, Gemini, Groq, OpenRouter, Ollama)",
+        description=(
+            "[bold cyan]aicode[/bold cyan] — AI coding agent for Termux\n\n"
+            "[dim]Claude Code-style with multi-provider support:[/dim]\n"
+            "[dim]NVIDIA NIM, OpenAI, Anthropic, Gemini, Groq, OpenRouter, Ollama[/dim]"
+        ),
+        formatter_class=HelpFormatter,
     )
     p.add_argument("--version", action="version", version=f"aicode {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     # Default: run (TUI)
-    p_run = sub.add_parser("run", help="Launch the TUI (default)")
-    p_run.add_argument("--profile", "-p", help="Pin a profile (e.g. nim, gpt, claude)")
+    p_run = sub.add_parser("run", help="Launch the TUI (default)", formatter_class=HelpFormatter)
+    p_run.add_argument("--profile", "-p", help="Pin a profile (e.g. nim, openai, claude)")
     p_run.add_argument("--cwd", help="Working directory (default: current)")
     p_run.add_argument("--config", help="Path to config.toml")
     p_run.add_argument("--plan", action="store_true", help="Start in plan mode (read-only, plans before executing)")
@@ -151,7 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.set_defaults(func=cmd_run)
 
     # exec — non-interactive mode
-    p_exec = sub.add_parser("exec", help="Non-interactive: run one prompt and exit (like `claude -p`)")
+    p_exec = sub.add_parser("exec", help="Non-interactive: run one prompt and exit (like `claude -p`)", formatter_class=HelpFormatter)
     p_exec.add_argument("prompt", nargs="?", default=None, help="Prompt text (or pipe via stdin)")
     p_exec.add_argument("--profile", "-p", help="Pin a profile")
     p_exec.add_argument("--cwd", help="Working directory")
@@ -161,27 +227,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_exec.set_defaults(func=cmd_exec)
 
     # config
-    p_init = sub.add_parser("config", help="Manage config")
+    p_init = sub.add_parser("config", help="Manage config", formatter_class=HelpFormatter)
     p_init_sub = p_init.add_subparsers(dest="subcmd", required=True)
-    p_init_init = p_init_sub.add_parser("init", help="Write default config")
+    p_init_init = p_init_sub.add_parser("init", help="Write default config", formatter_class=HelpFormatter)
     p_init_init.add_argument("--path", help="Custom config path")
     p_init_init.set_defaults(func=cmd_config_init)
-    p_init_show = p_init_sub.add_parser("show", help="Show resolved config")
+    p_init_show = p_init_sub.add_parser("show", help="Show resolved config", formatter_class=HelpFormatter)
     p_init_show.add_argument("--path", help="Custom config path")
     p_init_show.set_defaults(func=cmd_config_show)
 
     # doctor
-    p_doc = sub.add_parser("doctor", help="Diagnose config + environment")
+    p_doc = sub.add_parser("doctor", help="Diagnose config + environment", formatter_class=HelpFormatter)
     p_doc.add_argument("--config", help="Path to config.toml")
     p_doc.set_defaults(func=cmd_doctor)
 
     # setup
-    p_setup = sub.add_parser("setup", help="Run the interactive setup wizard")
+    p_setup = sub.add_parser("setup", help="Run the interactive setup wizard", formatter_class=HelpFormatter)
     p_setup.add_argument("--config", help="Path to write config.toml")
     p_setup.set_defaults(func=cmd_setup)
 
     # sessions
-    p_sess = sub.add_parser("sessions", help="List saved sessions")
+    p_sess = sub.add_parser("sessions", help="List saved sessions", formatter_class=HelpFormatter)
     p_sess.set_defaults(func=cmd_sessions)
 
     return p
